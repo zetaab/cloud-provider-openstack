@@ -500,6 +500,11 @@ func (lbaas *LbaasV2) GetLoadBalancer(ctx context.Context, clusterName string, s
 		return nil, false, err
 	}
 
+	useProxyProtocol, err := getBoolFromServiceAnnotation(service, ServiceAnnotationLoadBalancerProxyEnabled, false)
+	if err != nil {
+		return nil, false, err
+	}
+
 	status := &corev1.LoadBalancerStatus{}
 
 	portID := loadbalancer.VipPortID
@@ -508,11 +513,7 @@ func (lbaas *LbaasV2) GetLoadBalancer(ctx context.Context, clusterName string, s
 		if err != nil {
 			return nil, false, fmt.Errorf("failed when trying to get floating IP for port %s: %v", portID, err)
 		}
-		if floatIP != nil {
-			status.Ingress = []corev1.LoadBalancerIngress{{IP: floatIP.FloatingIP}}
-		} else {
-			status.Ingress = []corev1.LoadBalancerIngress{{IP: loadbalancer.VipAddress}}
-		}
+		status.Ingress = getStatus(loadbalancer, floatIP, useProxyProtocol)
 	}
 
 	return status, true, nil
@@ -957,6 +958,13 @@ func (lbaas *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string
 	if err != nil {
 		return nil, fmt.Errorf("error getting LB %s listeners: %v", loadbalancer.Name, err)
 	}
+
+
+	useProxyProtocol, err := getBoolFromServiceAnnotation(apiService, ServiceAnnotationLoadBalancerProxyEnabled, false)
+	if err != nil {
+		return nil, err
+	}
+
 	for portIndex, port := range ports {
 		listener := getListenerForPort(oldListeners, port)
 		climit := getStringFromServiceAnnotation(apiService, ServiceAnnotationLoadBalancerConnLimit, "-1")
@@ -1053,11 +1061,6 @@ func (lbaas *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string
 		if pool == nil {
 			// Use the protocol of the listerner
 			poolProto := v2pools.Protocol(listener.Protocol)
-
-			useProxyProtocol, err := getBoolFromServiceAnnotation(apiService, ServiceAnnotationLoadBalancerProxyEnabled, false)
-			if err != nil {
-				return nil, err
-			}
 			if useProxyProtocol && keepClientIP {
 				return nil, fmt.Errorf("annotation %s and %s cannot be used together", ServiceAnnotationLoadBalancerProxyEnabled, ServiceAnnotationLoadBalancerXForwardedFor)
 			}
@@ -1331,13 +1334,7 @@ func (lbaas *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string
 	}
 
 	status := &corev1.LoadBalancerStatus{}
-
-	if floatIP != nil {
-		status.Ingress = []corev1.LoadBalancerIngress{{IP: floatIP.FloatingIP}}
-	} else {
-		status.Ingress = []corev1.LoadBalancerIngress{{IP: loadbalancer.VipAddress}}
-	}
-
+	status.Ingress = getStatus(loadbalancer, floatIP, useProxyProtocol)
 	if lbaas.opts.ManageSecurityGroups {
 		err := lbaas.ensureSecurityGroup(clusterName, apiService, nodes, loadbalancer)
 		if err != nil {
@@ -1346,6 +1343,22 @@ func (lbaas *LbaasV2) EnsureLoadBalancer(ctx context.Context, clusterName string
 	}
 
 	return status, nil
+}
+
+func getStatus(loadbalancer *loadbalancers.LoadBalancer, floatIP *floatingips.FloatingIP, proxyProtocol bool) []corev1.LoadBalancerIngress {
+	// if we are using proxyprotocol we return IP address as Hostname, otherwise the traffic from inside cluster do not work to that service
+	// more info https://github.com/kubernetes/kubernetes/pull/91407 and https://github.com/kubernetes/kubernetes/issues/66607
+	if proxyProtocol {
+		if floatIP != nil {
+			return []corev1.LoadBalancerIngress{{Hostname: floatIP.FloatingIP}}
+
+		}
+		return []corev1.LoadBalancerIngress{{Hostname: loadbalancer.VipAddress}}
+	}
+	if floatIP != nil {
+		return []corev1.LoadBalancerIngress{{IP: floatIP.FloatingIP}}
+	}
+	return []corev1.LoadBalancerIngress{{IP: loadbalancer.VipAddress}}
 }
 
 func (lbaas *LbaasV2) getSubnet(subnet string) (*subnets.Subnet, error) {
