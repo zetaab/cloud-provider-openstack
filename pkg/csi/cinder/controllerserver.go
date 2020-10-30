@@ -70,12 +70,13 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		volAvailability = getAZFromTopology(req.GetAccessibilityRequirements())
 	}
 
-	if len(volAvailability) == 0 {
+	cloud := cs.Cloud
+
+	// when we have ignore volume az setting we should always read availability parameter
+	if len(volAvailability) == 0 || cloud.GetBlockStorageOpts().IgnoreVolumeAZ {
 		// Volume Availability - Default is nova
 		volAvailability = req.GetParameters()["availability"]
 	}
-
-	cloud := cs.Cloud
 
 	// Verify a volume with the provided name doesn't already exist for this tenant
 	volumes, err := cloud.GetVolumesByName(volName)
