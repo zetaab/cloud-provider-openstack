@@ -323,5 +323,13 @@ dist: build-cross
 		$(DIST_DIRS) zip -r cloud-provider-openstack-$(VERSION)-{}.zip {} \; \
 	)
 
+make-latest-%:
+	$(CONTAINER_ENGINE) pull --platform linux/amd64 $(REGISTRY)/$*:${VERSION}
+	$(CONTAINER_ENGINE) tag $(REGISTRY)/$*:${VERSION} $(REGISTRY)/$*:latest
+	$(CONTAINER_ENGINE) push $(REGISTRY)/$*:latest
+
+.PHONY: latest
+latest: $(addprefix make-latest-,$(IMAGE_NAMES))
+
 .PHONY: bindep build clean cover work docs fmt functional lint realclean \
 	relnotes test translation version build-cross dist codeclimate
