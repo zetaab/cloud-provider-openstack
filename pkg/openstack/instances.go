@@ -54,6 +54,13 @@ type Instances struct {
 	networkingOpts   NetworkingOpts
 }
 
+// InstancesV2 encapsulates an implementation of InstancesV2 for OpenStack.
+type InstancesV2 struct {
+	compute        *gophercloud.ServiceClient
+	region         string
+	networkingOpts NetworkingOpts
+}
+
 const (
 	instanceShutoff       = "SHUTOFF"
 	RegionalProviderIDEnv = "OS_CCM_REGIONAL"
@@ -136,9 +143,36 @@ func (os *OpenStack) Instances() (cloudprovider.Instances, bool) {
 }
 
 // InstancesV2 returns an implementation of InstancesV2 for OpenStack.
-// TODO: Support InstancesV2 in the future.
 func (os *OpenStack) InstancesV2() (cloudprovider.InstancesV2, bool) {
-	return nil, false
+	return os.instancesv2()
+}
+
+func (os *OpenStack) instancesv2() (*InstancesV2, bool) {
+	klog.V(4).Info("openstack.Instancesv2() called")
+
+	compute, err := client.NewComputeV2(os.provider, os.epOpts)
+	if err != nil {
+		klog.Errorf("unable to access compute v2 API : %v", err)
+		return nil, false
+	}
+
+	return &InstancesV2{
+		compute:        compute,
+		region:         os.epOpts.Region,
+		networkingOpts: os.networkingOpts,
+	}, true
+}
+
+func (i *InstancesV2) InstanceExists(ctx context.Context, node *v1.Node) (bool, error) {
+	return instanceExistsByProviderID(ctx, i.compute, node.Spec.ProviderID, i.region)
+}
+
+func (i *InstancesV2) InstanceShutdown(ctx context.Context, node *v1.Node) (bool, error) {
+	return instanceShutdownByProviderID(ctx, i.compute, node.Spec.ProviderID, i.region)
+}
+
+func (i *InstancesV2) InstanceMetadata(ctx context.Context, node *v1.Node) (*cloudprovider.InstanceMetadata, error) {
+	return instanceMetadata(ctx, i.compute, node, i.region, i.networkingOpts)
 }
 
 func (os *OpenStack) instances() (*Instances, bool) {
@@ -314,31 +348,42 @@ func (i *Instances) InstanceShutdownByProviderID(ctx context.Context, providerID
 
 // InstanceMetadata returns metadata of the specified instance.
 func (i *Instances) InstanceMetadata(ctx context.Context, node *v1.Node) (*cloudprovider.InstanceMetadata, error) {
-	instanceID, instanceRegion, err := instanceIDFromProviderID(node.Spec.ProviderID)
+	return instanceMetadata(ctx, i.compute, node, i.region, i.networkingOpts)
+}
+
+func findInstanceID(node *v1.Node) (instanceID string, region string, err error) {
+	if node.Spec.ProviderID != "" {
+		return instanceIDFromProviderID(node.Spec.ProviderID)
+	}
+
+}
+
+func instanceMetadata(ctx context.Context, compute *gophercloud.ServiceClient, node *v1.Node, region string, netOpts NetworkingOpts) (*cloudprovider.InstanceMetadata, error) {
+	instanceID, instanceRegion, err := findInstanceID(node)
 	if err != nil {
 		return nil, err
 	}
 
-	if instanceRegion != "" && instanceRegion != i.region {
-		return nil, fmt.Errorf("ProviderID \"%s\" didn't match supported region \"%s\"", node.Spec.ProviderID, i.region)
+	if instanceRegion != "" && instanceRegion != region {
+		return nil, fmt.Errorf("ProviderID \"%s\" didn't match supported region \"%s\"", node.Spec.ProviderID, region)
 	}
 
 	mc := metrics.NewMetricContext("server", "get")
-	srv, err := servers.Get(i.compute, instanceID).Extract()
+	srv, err := servers.Get(compute, instanceID).Extract()
 	if mc.ObserveRequest(err) != nil {
 		return nil, err
 	}
 
-	instanceType, err := srvInstanceType(i.compute, srv)
+	instanceType, err := srvInstanceType(compute, srv)
 	if err != nil {
 		return nil, err
 	}
 
-	interfaces, err := getAttachedInterfacesByID(i.compute, srv.ID)
+	interfaces, err := getAttachedInterfacesByID(compute, srv.ID)
 	if err != nil {
 		return nil, err
 	}
-	addresses, err := nodeAddresses(srv, interfaces, i.networkingOpts)
+	addresses, err := nodeAddresses(srv, interfaces, netOpts)
 	if err != nil {
 		return nil, err
 	}
