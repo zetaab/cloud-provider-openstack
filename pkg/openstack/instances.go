@@ -56,9 +56,10 @@ type Instances struct {
 
 // InstancesV2 encapsulates an implementation of InstancesV2 for OpenStack.
 type InstancesV2 struct {
-	compute        *gophercloud.ServiceClient
-	region         string
-	networkingOpts NetworkingOpts
+	compute          *gophercloud.ServiceClient
+	region           string
+	regionProviderID bool
+	networkingOpts   NetworkingOpts
 }
 
 const (
@@ -156,10 +157,16 @@ func (os *OpenStack) instancesv2() (*InstancesV2, bool) {
 		return nil, false
 	}
 
+	regionalProviderID := false
+	if isRegionalProviderID := sysos.Getenv(RegionalProviderIDEnv); isRegionalProviderID == "true" {
+		regionalProviderID = true
+	}
+
 	return &InstancesV2{
-		compute:        compute,
-		region:         os.epOpts.Region,
-		networkingOpts: os.networkingOpts,
+		compute:          compute,
+		region:           os.epOpts.Region,
+		regionProviderID: regionalProviderID,
+		networkingOpts:   os.networkingOpts,
 	}, true
 }
 
@@ -172,7 +179,7 @@ func (i *InstancesV2) InstanceShutdown(ctx context.Context, node *v1.Node) (bool
 }
 
 func (i *InstancesV2) InstanceMetadata(ctx context.Context, node *v1.Node) (*cloudprovider.InstanceMetadata, error) {
-	return instanceMetadata(ctx, i.compute, node, i.region, i.networkingOpts)
+	return instanceMetadata(ctx, i.compute, node, i.region, i.networkingOpts, i.regionProviderID)
 }
 
 func (os *OpenStack) instances() (*Instances, bool) {
@@ -348,7 +355,7 @@ func (i *Instances) InstanceShutdownByProviderID(ctx context.Context, providerID
 
 // InstanceMetadata returns metadata of the specified instance.
 func (i *Instances) InstanceMetadata(ctx context.Context, node *v1.Node) (*cloudprovider.InstanceMetadata, error) {
-	return instanceMetadata(ctx, i.compute, node, i.region, i.networkingOpts)
+	return instanceMetadata(ctx, i.compute, node, i.region, i.networkingOpts, i.regionProviderID)
 }
 
 func findInstanceID(node *v1.Node) (instanceID string, region string, err error) {
@@ -358,7 +365,7 @@ func findInstanceID(node *v1.Node) (instanceID string, region string, err error)
 
 }
 
-func instanceMetadata(ctx context.Context, compute *gophercloud.ServiceClient, node *v1.Node, region string, netOpts NetworkingOpts) (*cloudprovider.InstanceMetadata, error) {
+func instanceMetadata(ctx context.Context, compute *gophercloud.ServiceClient, node *v1.Node, region string, netOpts NetworkingOpts, regionProviderID bool) (*cloudprovider.InstanceMetadata, error) {
 	instanceID, instanceRegion, err := findInstanceID(node)
 	if err != nil {
 		return nil, err
@@ -389,10 +396,18 @@ func instanceMetadata(ctx context.Context, compute *gophercloud.ServiceClient, n
 	}
 
 	return &cloudprovider.InstanceMetadata{
-		ProviderID:    node.Spec.ProviderID,
+		ProviderID:    instanceProviderID(srv, region, regionProviderID),
 		InstanceType:  instanceType,
 		NodeAddresses: addresses,
 	}, nil
+}
+
+func instanceProviderID(srv *servers.Server, region string, regionProviderID bool) string {
+	if regionProviderID {
+		return region + "/" + srv.ID
+	}
+
+	return "/" + srv.ID
 }
 
 // InstanceID returns the cloud provider ID of the specified instance.
