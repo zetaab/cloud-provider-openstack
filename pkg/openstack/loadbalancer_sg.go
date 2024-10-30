@@ -200,6 +200,10 @@ func getRulesToCreateAndDelete(wantedRules []rules.CreateOpts, existingRules []r
 		}
 	}
 
+	klog.V(4).Infof("Wanted rules: %+v", wantedRules)
+	klog.V(4).Infof("Existing rules: %+v", existingRules)
+	klog.V(4).Infof("Rules to create: %+v", toCreate)
+	klog.V(4).Infof("Rules to delete: %+v", toDelete)
 	return toCreate, toDelete
 }
 
@@ -284,6 +288,7 @@ func (lbaas *LbaasV2) ensureAndUpdateOctaviaSecurityGroup(clusterName string, ap
 
 	for _, port := range ports {
 		if port.NodePort == 0 { // It's 0 when AllocateLoadBalancerNodePorts=False
+			klog.V(4).Infof("NodePort not found, skipping security group rule creation for port %d", port.Port)
 			continue
 		}
 		for _, cidr := range cidrs {
